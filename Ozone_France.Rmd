@@ -40,9 +40,13 @@ library(kableExtra)
 
 # Introduction
 
-We analyse ozone concentrations recorded on February 19, 2026 across monitoring stations in metropolitan France. Ozone is a pollutant whose concentration varies continuously over space, making it a good example of geostatistical data because it is a spatial continuous phenomenon observed at a finite set of locations.
+Air quality monitoring is a major public health challenge, particularly regarding ground-level ozone, a pollutant with significant respiratory impacts. Understanding its spatial distribution is essential for identifying exposure risks across the territory. However, while we have precise measurements from monitoring stations, we lack information for the vast majority of the country where no sensors are installed.
 
-Source of the data: <https://object.infra.data.gouv.fr/browser/ineris-prod/lcsqa%2Fconcentrations-de-polluants-atmospheriques-reglementes%2Ftemps-reel%2F2026%2F>
+In this study, we analyze ozone concentration data provided by the LCSQA (Laboratoire Central de Surveillance de la Qualité de l'Air). Our dataset consists of the mean ozone concentrations recorded by each sensor across France for the specific day of February 19, 2026. Ozone is a pollutant whose concentration varies continuously over space, making it a good example of geostatistical data because it is a spatial continuous phenomenon observed at a finite set of locations.
+
+\~Source of the [data:\\](data:\){.uri} <https://object.infra.data.gouv.fr/browser/ineris-prod/lcsqa%2Fconcentrations-de-polluants-atmospheriques-reglementes%2Ftemps-reel%2F2026%2F>\~
+
+The objective is to use the Kriging geostatistical method to interpolate these point-based measurements. By leveraging the spatial autocorrelation of the data, we aim to build a continuous grid that predicts ozone levels in unsampled areas, providing a comprehensive overview of air quality on that day.
 
 Methodology :
 
@@ -51,6 +55,93 @@ Methodology :
 \- Characterisation of spatial dependence through variogram analysis.
 
 \- Spatial interpolation across France using Kriging. (Comparison with Inverse Distance Weighting (IDW) via cross-validation.)
+
+# Theoretical framework
+
+Air pollution, like ozone concentration, is a phenomenon that varies continuously across space, however it can only be measured at a finite set of locations. The field of geostatistics addresses this challenge: how to model, analyse, and predict spatially continuous phenomena from discrete observations.
+
+Formally, we model the ozone field as a realisation of a random process $\{Z(s) : s \in D\}$, where $D \subset \mathbb{R}^2$ is the study domain (here, metropolitan France) and $s$ denotes a geographic location.
+
+## Gaussian Random Fields
+
+A Gaussian Random Field (GRF) is the theoretical model most commonly assumed for the spatial process $Z(\cdot)$. A GRF is a collection of random variables indexed by space, such that every finite subset of those variables follows a multivariate normal distribution. Under this assumption, the process is entirely described by its mean and its covariance function, which simplifies both the theoretical framework and the estimation:
+
+-   $\mathbb{E}[Z(s)]$,
+-   $Cov(s_i, s_j) = \text{Cov}(Z(s_i), Z(s_j))$.
+
+To make estimation feasible with a limited number of observations, we impose two assumptions.
+
+**Second-order stationarity** (also called weak stationarity). Under this condition, the process has a constant mean over the entire domain:
+
+$$\mathbb{E}[Z(s)] = \mu, \quad \forall s \in D$$
+
+and the covariance between any two locations depends only on the vector separating them, not on their absolute positions:
+
+$$\text{Cov}(Z(s), Z(s+h)) = C(h), \quad \forall s \in D, \; \forall h \in \mathbb{R}^2$$
+
+A further simplification is **isotropy**: the covariance depends only on the distance between locations, not the direction. When this assumption does not hold, the covariance structure must account for directional effects.
+
+## The Covariance function and the Variogram
+
+### Covariance function
+
+Under stationarity and isotropy, the covariance between any two locations reduces to a function of their distance only, which we write :$$C(h) = \sigma^2  \text{Corr}(h) $$ where $\sigma^2$ is the marginal variance of the process and $\text{Corr}(h)$ is a positive definite correlation function decreasing with distance $h$.
+
+Several parametric families exist for \$\\text{Corr}(h)\$, such as the Matérn or Gaussian families. In this study, we use the \*\*Spherical\*\* model, defined as: $$
+\text{Corr}(h) =
+\begin{cases}
+1 - \frac{3h}{2\phi} + \frac{h^3}{2\phi^3} & \text{if } h \leq \phi \\[6pt]
+0 & \text{if } h > \phi
+\end{cases}
+$$
+
+Unlike models that approach the sill asymptotically, the Spherical model reaches exactly zero at the range \$\\phi\$, making this parameter directly interpretable. Near the origin, the curve is linear, which reflects a realistic degree of irregularity for a physical field like ozone concentration.
+
+### Variogram
+
+The variogram is used to characterise the spatial dependence structure of a geostatistical dataset. For a process satisfying stationarity and isotropy, the variogram $2\gamma(\cdot)$ is defined as:
+
+$$2\gamma(h) = \text{Var}[Z(s+h) - Z(s)] = \mathbb{E}\left[(Z(s+h) - Z(s))^2\right]$$
+
+The function $\gamma(\cdot)$ is the semivariogram.
+
+The semivariogram is estimated from data using the empirical semivariogram:
+
+$$\hat{\gamma}(h) = \frac{1}{2|N(h)|} \sum_{N(h)} \left(Z(s_i) - Z(s_j)\right)^2$$
+
+where $N(h) = \{(s_i, s_j) : \|s_i - s_j\| = h\}$ is the set of observation pairs separated by distance $h$, and $|N(h)|$ is the number of such pairs.
+
+When plotted against distance, the empirical semivariogram typically exhibits a characteristic shape described by three key parameters:
+
+-   The nugget is the value of the semivariogram at distance zero
+-   The sill is the plateau value reached by the semivariogram at large distances, corresponding to the total variance of the process.
+-   The range is the distance at which the semivariogram reaches the sill, beyond which observations are considered spatially uncorrelated.
+
+The empirical semivariogram is an essential exploratory tool: an increasing trend with distance indicates the presence of spatial correlation, while a flat semivariogram suggests spatial independence. It also serves as the basis for fitting a parametric variogram model, which is a necessary step before performing spatial interpolation via Kriging.
+
+## Kriging
+
+### Fitted variogram
+
+We now want to predict the ozone concentration in places where sensors are not available. To perform this predictions, we will use Kriging, which is a spatial interpolation method to get predictions at unsampled locations.
+
+While the previous section analyzed the sample variogram (empirical observations), we cannot use it directly for prediction. In fact, kriging requires a continuous mathematical function to calculate weights for any possible distance.
+
+To fit the variogram, we use the Weighted Least Squares (WLS) method. This method estimates the parameters $\lambda$ (nugget, sill, range) by minimizing the weighted difference between the empirical semi-variance $\hat{\gamma}(h_j)$ and the theoretical model $\gamma(h_j; \lambda)$:
+
+$$\sum_{j=1}^{k} w_j [\hat{\gamma}(h(j)) - \gamma(h(j); \lambda)]^2$$
+
+We first try a gaussian model, using the estimated sill, range and nugget from the empirical variogram, and then a spherical model. When fitting the spherical model with the coefficients from the empirical variogram, the model can not converge (singular model). Thus, we use the coefficients from the gaussian variogram we fitted just before, and we get good results.
+
+### Kriging
+
+Now that we have fitted a variogram, we can perform spatial interpolation through Ordinary Kriging. Suppose that our data, observed, are $Z(s_1), \dots, Z(s_n)$. We want to predict the value of $Z$ at a point $s_0 \in D$. The ordinary Kriging estimator of $Z(s_0)$ is the estimator $$\hat{Z}(s_0) = \sum_{i=1}^{n} \lambda_i Z(s_i)$$This estimator is the Best Linear Unbiased Estimator since it minimizes the mean-squared prediction error : $$E[(\hat{Z}(s_0) - Z(s_0))^2]$$
+
+subject to the constraint $\sum_{i=1}^n \lambda_i = 1$
+
+The weights $\lambda_i$ come from the fitted variogram. This ensures that the model captures the spatial autocorrelation (nugget, sill, and range) of the data. Beyond simple distance, the estimator accounts for station clustering by reducing the weight of redundant sensors.
+
+Now that we have the estimator, we need to build the points on which we are going to predict the ozone concentration. We thus build a grid of points in France. Using the `st_make_grid()` function, we discretize the study area into a regular spatial grid.
 
 ------------------------------------------------------------------------
 
@@ -147,18 +238,6 @@ ggplot(data_sf, aes(x = `valeur brute`)) +
 ------------------------------------------------------------------------
 
 # Variogram analysis
-
-The semi-variogram is a very used tool in geostatistics. It quantifies how spatial dependence decays with distance. For two stations $s_i$ and $s_j$ separated by a distance $h$, it measures half of their average squared difference:
-
-$$\hat{\gamma}(h) = \frac{1}{2|N(h)|} \sum_{N(h)} \left(Z(s_i) - Z(s_j)\right)^2$$
-
-where $N(h)$ is the set of all pairs of stations separated by distance $h$.
-
-Three parameters describe the shape of the semi-variogram:
-
--   Nugget $\tau^2$: the semi-variance at distance 0. A non-zero nugget reflects micro-scale variation or measurement error between very close stations.
--   Sill $\sigma^2 + \tau^2$: the plateau reached by the curve, corresponding to the total variance of the data.
--   Range $\phi$: the distance at which the curve reaches the sill. Beyond this distance, two stations are no longer spatially correlated.
 
 ## Variogram cloud
 
