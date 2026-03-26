@@ -1,0 +1,321 @@
+---
+title: "Spatial Analysis of Ozone Pollution in Metropolitan France"
+subtitle: "Geostatistical modelling and Kriging interpolation"
+author: "Maëlys Rapenne, Loan Rottier, Nathan Vidal, Simon Simus"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5
+)
+set.seed(1)
+```
+
+```{r}
+library(readr)
+library(tidyverse)
+library(sf)
+library(mapview)
+library(RColorBrewer)
+library(geoR)
+library(gstat)
+library(ggplot2)
+library(viridis)
+library(rnaturalearth)
+library(sp)
+library(knitr)
+library(kableExtra)
+```
+
+------------------------------------------------------------------------
+
+# Introduction
+
+We analyse ozone concentrations recorded on February 19, 2026 across monitoring stations in metropolitan France. Ozone is a pollutant whose concentration varies continuously over space, making it a good example of geostatistical data because it is a spatial continuous phenomenon observed at a finite set of locations.
+
+Source of the data: <https://object.infra.data.gouv.fr/browser/ineris-prod/lcsqa%2Fconcentrations-de-polluants-atmospheriques-reglementes%2Ftemps-reel%2F2026%2F>
+
+Methodology :
+
+\- Spatial exploration of ozone concentrations (EDA).
+
+\- Characterisation of spatial dependence through variogram analysis.
+
+\- Spatial interpolation across France using Kriging. (Comparison with Inverse Distance Weighting (IDW) via cross-validation.)
+
+------------------------------------------------------------------------
+
+# Data import and preprocessing
+
+```{r}
+data <- read_delim(
+  "Export Moy. journalière - O₃ - 2026-02-19.csv",
+  delim = ";", escape_double = FALSE, trim_ws = TRUE
+)
+```
+
+We restrict the dataset to metropolitan France by filtering on geographic coordinates, removing overseas territories and erroneous records.
+
+```{r}
+data <- data %>%
+  filter(Latitude  >  40,
+         Longitude < 10,
+         Longitude > -10)
+```
+
+```{r}
+data_sf <- st_as_sf(data, coords = c("Longitude", "Latitude"), crs = 4326)
+```
+
+------------------------------------------------------------------------
+
+# Exploratory Data Analysis (EDA)
+
+## Distribution of ozone concentrations and anomalies
+
+```{r}
+summary(data_sf$`valeur brute`)
+```
+
+The ozone concentrations range from 0 to 98 µg/m3, a mean of 67 and a median close to 70, suggesting a symmetric distribution. The interquartile range (57 to79µg/m3 ) is relatively narrow, indicating that most stations record similar moderate levels.
+
+The minimum value of 0 seem to be abnormal /anomaly.
+
+```{r}
+#count stations with value lower than 20
+sum(data_sf$`valeur brute` < 25, na.rm = TRUE)
+#there is only one station with a value of 0, which is likely an error or a station with no data.
+#we decide to remove it from the dataset
+data_sf <- data_sf %>% filter(`valeur brute` > 0)
+```
+
+## Interactive map
+
+```{r}
+mapview(data_sf,
+        zcol       = "valeur brute",
+        col.regions = brewer.pal(9, "Reds"),
+        layer.name = "Concentration Ozone O3 (µg/m3)",
+        legend     = TRUE)
+```
+
+## Static map
+
+```{r}
+france_map <- ne_countries(scale = "medium", country = "France", returnclass = "sf")
+data_sf <- st_transform(data_sf, st_crs(france_map))
+ggplot(data_sf) + 
+  geom_sf(data = france_map, fill = "gray95", color = "black", linewidth = 0.3) + 
+  geom_sf(aes(color = `valeur brute`), size = 2) + 
+  coord_sf(xlim = c(-5.2, 9.6), ylim = c(41.3, 51.1), expand = FALSE) +
+  scale_color_gradient(low = "blue", high = "orange", name = "O3 (µg/m3)") +
+  labs(title = "Daily average ozone concentrations — 2026-02-19",
+       caption = "Source: LCSQA / INERIS") +
+  theme_bw()
+```
+
+Ozone concentrations are clearly higher in the south of France (Mediterranean coast, Rhône valley) and lower in the north - North East. This north-south gradient is consistent with higher solar radiation in the south, which promotes ozone formation.
+
+Additionally, eastern France (Alsace, Rhone alpes) shows higher variability between neighbouring station. It might be due to influence of Vosges and Alps that can create microclimates.
+
+## Distribution of ozone values
+
+```{r}
+ggplot(data_sf, aes(x = `valeur brute`)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  geom_vline(aes(xintercept = mean(`valeur brute`, na.rm = TRUE)),
+             color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Distribution of O3 daily average concentrations",
+    x     = "O3 concentration",
+    y     = "Number of stations"
+  ) +
+  theme_bw()
+```
+
+> The distribution is roughly symmetric around the mean , with no extreme outliers. This is a favourable condition for applying Kriging, which assumes Gaussian random fields.
+
+------------------------------------------------------------------------
+
+# Variogram analysis
+
+The semi-variogram is a very used tool in geostatistics. It quantifies how spatial dependence decays with distance. For two stations $s_i$ and $s_j$ separated by a distance $h$, it measures half of their average squared difference:
+
+$$\hat{\gamma}(h) = \frac{1}{2|N(h)|} \sum_{N(h)} \left(Z(s_i) - Z(s_j)\right)^2$$
+
+where $N(h)$ is the set of all pairs of stations separated by distance $h$.
+
+Three parameters describe the shape of the semi-variogram:
+
+-   Nugget $\tau^2$: the semi-variance at distance 0. A non-zero nugget reflects micro-scale variation or measurement error between very close stations.
+-   Sill $\sigma^2 + \tau^2$: the plateau reached by the curve, corresponding to the total variance of the data.
+-   Range $\phi$: the distance at which the curve reaches the sill. Beyond this distance, two stations are no longer spatially correlated.
+
+## Variogram cloud
+
+The variogram cloud plots all pairwise squared differences against separation distance, without averaging. It helps detect outliers and assess the overall spatial dependence structure before smoothing.
+
+We set the cutoff to 600 km, as beyond this distance the number of station pairs becomes too small to reliably estimate the semi-variance.
+
+```{r}
+
+vc <- variogram(data_sf$`valeur brute` ~ 1, data_sf, cloud = TRUE,cutoff = 500)
+plot(vc,
+     main = "Empirical variogram values",
+     xlab = "Distance",
+     ylab = "Semi-variance")
+```
+
+As expected, nearby stations tend to have lower semi-variance than distant ones, confirming spatial autocorrelation in ozone concentrations. The wide scatter at all distances reflects the local variability observed on the map. \## Sample (empirical) variogram
+
+```{r}
+v <- variogram(data_sf$`valeur brute` ~ 1, data_sf,cutoff = 500)
+plot(v,
+     main = "Average Empirical variogram values",
+     xlab = "Distance",
+     ylab = "Semi-variance")
+```
+
+The semi-variance is expressed in (µg/m³)², since it represents squared differences of ozone concentrations.
+
+The semi-variogram increases from 40 µg²/m⁶ at short distances and seems to stabilise around 220-230 µg²/m⁶ beyond 400 km, suggesting a range of approximately 400 km. The nugget (40 µg²/m⁶) is small relative to the sill (230), meaning most of the variability is spatially structured. We set the cutoff to 500 km as beyond this distance the number of station pairs becomes too small to reliably estimate the semi-variance.
+
+# Variogram model fitting
+
+## Initial parameter estimates
+
+```{r}
+esti_nugget <- 40
+esti_sill   <- 230
+esti_range  <- 400
+```
+
+## Gaussian model
+
+The Gaussian model assumes very smooth spatial variation (infinitely differentiable process)
+
+```{r}
+vinitial_gau <- vgm(
+  psill  = esti_sill - esti_nugget,
+  model  = "Gau",
+  range  = esti_range,
+  nugget = esti_nugget
+)
+v_fit_gau <- fit.variogram(v, model = vinitial_gau)
+plot(v, v_fit_gau,
+     main = "Fitted Gaussian variogram",
+     xlab = "Distance (degrees)",
+     ylab = "Semi-variance (µg²/m⁶)")
+```
+
+The Gaussian model fits the empirical variogram reasonably well up to 250 km, capturing the initial rise and the flattening around 150 µg²/m⁶. However, it underestimates the semi-variance at larger distances (350-500 km), where the empirical points continue to rise above the fitted curve.
+
+```{r}
+print(v_fit_gau)
+```
+
+The Gaussian model estimates a nugget of 41.4 µg²/m⁶, a sill of 158.1 µg²/m⁶ (41.4 + 116.7), and a range of 126 km, meaning that ozone concentrations are no longer spatially correlated beyond \~126 km.
+
+## Spherical model
+
+The Spherical model is the most widely used in geostatistics. Unlike the Gaussian model which approaches the sill asymptotically, the Spherical model reaches it exactly at the range distance, making the range parameter directly interpretable.
+
+```{r}
+vinitial_sph <- vgm(
+  psill  = esti_sill - esti_nugget,
+  model  = "Sph",
+  range  = esti_range,
+  nugget = esti_nugget,
+)
+v_fit_sph <- fit.variogram(v, model = vinitial_sph)
+plot(v, v_fit_sph,
+     main = "Fitted Spherical variogram",
+     xlab = "Distance",
+     ylab = "Semi-variance")
+```
+
+The Spherical model fits the empirical variogram well across the entire distance range, following the points closely from 0 to 500 km. However, since the range is estimated at 657 km (see after) beyond our cutoff of 500 km — the sill is never reached within the observed data, which explains why the curve is still rising at the end of the plot.
+
+```{r}
+v_fit_sph
+```
+
+The Spherical model estimates a nugget of 35.8 µg²/m⁶, a sill of 249.8 µg²/m⁶ (35.8 + 213.9), and a range of 657 km, meaning that ozone concentrations are no longer spatially correlated beyond 657 km.
+
+## Model comparison
+
+```{r}
+gau_sse <- attr(v_fit_gau, "SSErr")
+sph_sse <- attr(v_fit_sph, "SSErr")
+
+comparison <- tibble(
+  Model    = c("Gaussian", "Spherical"),
+  Nugget   = c(v_fit_gau$psill[1], v_fit_sph$psill[1]),
+  `Partial sill` = c(v_fit_gau$psill[2], v_fit_sph$psill[2]),
+  Range    = c(v_fit_gau$range[2], v_fit_sph$range[2]),
+  SSE      = c(gau_sse, sph_sse)
+) %>% mutate(across(where(is.numeric), ~round(., 3)))
+
+comparison
+```
+
+The Spherical model has a much lower SSE (160 vs 439), indicating a better fit to the empirical variogram. We therefore select the Spherical model for Kriging interpolation.
+
+------------------------------------------------------------------------
+
+# Kriging interpolation
+
+## Prediction grid
+
+We create a regular 0.1° grid covering metropolitan France, clipped to the country boundary.
+
+```{r}
+france <- ne_countries(scale = 50, country = "France", returnclass = "sf")
+france <- st_crop(france, xmin = -5, xmax = 10, ymin = 41, ymax = 52)
+
+france_grid    <- st_make_grid(france, cellsize = 0.1, what = "centers")
+france_grid    <- st_intersection(france_grid, france)
+france_grid_sf <- st_sf(geometry = france_grid)
+plot(france_grid_sf)
+```
+
+## Ordinary Kriging predictions
+
+```{r}
+k     <- gstat(formula = data_sf$`valeur brute` ~ 1, data = data_sf, model = v_fit_sph)
+kpred <- predict(k, france_grid_sf)
+kpred
+```
+
+We fit an ordinary kriging model using the spherica variogram and predict ozone concentrations at each point of the France grid. The \~ 1 formula assumes a constant unknown mean over space.
+
+The output contains 6431 grid points covering metropolitan France. For each point, Kriging returns a predicted ozone concentration (var1.pred) and an associated prediction variance (var1.var). For example, the first point located on the Mediterranean coast (9.09°E, 41.43°N) predicts a concentration of 81.8 µg/m³ with a variance of 98.7 µg²/m⁶.
+
+## Kriging prediction map
+
+```{r}
+ggplot() + geom_sf(data = kpred, aes(color = var1.pred)) +
+  geom_sf(data = data_sf) +
+  scale_color_viridis(name = "Ozone concentration - prediction with Ordinary Kringing") + theme_bw()
+```
+
+The Kriging map produces a smooth continuous surface of ozone concentrations across France, consistent with the north-south gradient observed in the EDA. The highest concentrations (\>80 µg/m3) are predicted in the south-west and on the Mediterranean coast, while the lowest values (\<40 µg/m2) are found in the north-east. The smoothness of the surface reflects the large range estimated by the Spherical model (657 km), meaning that each prediction is influenced by stations up to 657 km away.
+
+## Kriging variance (uncertainty) map
+
+```{r}
+ggplot() + geom_sf(data = kpred, aes(color = var1.var)) +
+  geom_sf(data = data_sf) +
+  scale_color_viridis(name = "Ozone concentration - variance") + theme_bw()
+```
+
+The variance map shows that prediction uncertainty is lowest in areas with a high density of monitoring stations, particularly near Paris and the Rhone valley. Conversely, variance is highest in areas with sparse coverage such as the south-west coast, and Corsica. This is a key property of Kriging: uncertainty is directly driven by the spatial distribution of observations, not by the predicted values themselves.
