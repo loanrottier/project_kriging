@@ -44,7 +44,7 @@ Air quality monitoring is a major public health challenge, particularly regardin
 
 In this study, we analyze ozone concentration data provided by the LCSQA (Laboratoire Central de Surveillance de la Qualité de l'Air). Our dataset consists of the mean ozone concentrations recorded by each sensor across France for the specific day of February 19, 2026. Ozone is a pollutant whose concentration varies continuously over space, making it a good example of geostatistical data because it is a spatial continuous phenomenon observed at a finite set of locations.
 
-\~Source of the [data:\\](data:\){.uri} <https://object.infra.data.gouv.fr/browser/ineris-prod/lcsqa%2Fconcentrations-de-polluants-atmospheriques-reglementes%2Ftemps-reel%2F2026%2F>\~
+\~Source of the [[data:\\\\](data:\\){.uri}]([data:\\](data:\){.uri}){.uri} <https://object.infra.data.gouv.fr/browser/ineris-prod/lcsqa%2Fconcentrations-de-polluants-atmospheriques-reglementes%2Ftemps-reel%2F2026%2F>\~
 
 The objective is to use the Kriging geostatistical method to interpolate these point-based measurements. By leveraging the spatial autocorrelation of the data, we aim to build a continuous grid that predicts ozone levels in unsampled areas, providing a comprehensive overview of air quality on that day.
 
@@ -133,7 +133,7 @@ $$\sum_{j=1}^{k} w_j [\hat{\gamma}(h(j)) - \gamma(h(j); \lambda)]^2$$
 
 We first try a gaussian model, using the estimated sill, range and nugget from the empirical variogram, and then a spherical model. When fitting the spherical model with the coefficients from the empirical variogram, the model can not converge (singular model). Thus, we use the coefficients from the gaussian variogram we fitted just before, and we get good results.
 
-### Kriging
+### Kriging method
 
 Now that we have fitted a variogram, we can perform spatial interpolation through Ordinary Kriging. Suppose that our data, observed, are $Z(s_1), \dots, Z(s_n)$. We want to predict the value of $Z$ at a point $s_0 \in D$. The ordinary Kriging estimator of $Z(s_0)$ is the estimator $$\hat{Z}(s_0) = \sum_{i=1}^{n} \lambda_i Z(s_i)$$This estimator is the Best Linear Unbiased Estimator since it minimizes the mean-squared prediction error : $$E[(\hat{Z}(s_0) - Z(s_0))^2]$$
 
@@ -177,7 +177,7 @@ data_sf <- st_as_sf(data, coords = c("Longitude", "Latitude"), crs = 4326)
 summary(data_sf$`valeur brute`)
 ```
 
-The ozone concentrations range from 0 to 98 µg/m3, a mean of 67 and a median close to 70, suggesting a symmetric distribution. The interquartile range (57 to79µg/m3 ) is relatively narrow, indicating that most stations record similar moderate levels.
+The ozone concentrations range from 0 to 98 µg/m3, a mean of 67 and a median close to 70, suggesting a symmetric distribution. The interquartile range (57 to 79µg/m3 ) is relatively narrow, indicating that most stations record similar moderate levels.
 
 The minimum value of 0 seem to be abnormal /anomaly.
 
@@ -375,7 +375,7 @@ kpred <- predict(k, france_grid_sf)
 kpred
 ```
 
-We fit an ordinary kriging model using the spherica variogram and predict ozone concentrations at each point of the France grid. The \~ 1 formula assumes a constant unknown mean over space.
+We fit an ordinary kriging model using the spherical variogram and predict ozone concentrations at each point of the France grid. The \~ 1 formula assumes a constant unknown mean over space.
 
 The output contains 6431 grid points covering metropolitan France. For each point, Kriging returns a predicted ozone concentration (var1.pred) and an associated prediction variance (var1.var). For example, the first point located on the Mediterranean coast (9.09°E, 41.43°N) predicts a concentration of 81.8 µg/m³ with a variance of 98.7 µg²/m⁶.
 
@@ -384,7 +384,7 @@ The output contains 6431 grid points covering metropolitan France. For each poin
 ```{r}
 ggplot() + geom_sf(data = kpred, aes(color = var1.pred)) +
   geom_sf(data = data_sf) +
-  scale_color_viridis(name = "Ozone concentration - prediction with Ordinary Kringing") + theme_bw()
+  scale_color_viridis(name = "Ozone concentration - \n prediction with Ordinary Kringing") + theme_bw()
 ```
 
 The Kriging map produces a smooth continuous surface of ozone concentrations across France, consistent with the north-south gradient observed in the EDA. The highest concentrations (\>80 µg/m3) are predicted in the south-west and on the Mediterranean coast, while the lowest values (\<40 µg/m2) are found in the north-east. The smoothness of the surface reflects the large range estimated by the Spherical model (657 km), meaning that each prediction is influenced by stations up to 657 km away.
